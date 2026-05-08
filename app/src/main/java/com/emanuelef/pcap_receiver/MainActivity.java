@@ -9,6 +9,7 @@ import androidx.appcompat.app.AppCompatActivity;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.os.Bundle;
+import android.os.Environment;
 import android.util.Log;
 import android.widget.Button;
 import android.widget.TextView;
@@ -17,20 +18,28 @@ import android.widget.Toast;
 import org.pcap4j.packet.EthernetPacket;
 import org.pcap4j.packet.IpV4Packet;
 
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
 import java.util.Arrays;
+import java.util.Date;
+import java.util.List;
+import java.util.Locale;
 import java.util.Observable;
 import java.util.Observer;
 
 public class MainActivity extends AppCompatActivity implements Observer {
-    static final String PCAPDROID_PACKAGE = "com.emanuelef.remote_capture"; // add ".debug" for the debug build of PCAPdroid
+    static final String PCAPDROID_PACKAGE = "com.emanuelef.remote_capture";
     static final String CAPTURE_CTRL_ACTIVITY = "com.emanuelef.remote_capture.activities.CaptureCtrl";
     static final String CAPTURE_STATUS_ACTION = "com.emanuelef.remote_capture.CaptureStatus";
     static final String TAG = "PCAP Receiver";
     private static final int PCAPDROID_TRAILER_SIZE = 32;
     private static final int PCAPDROID_MAGIC = 0x01072021;
     private static final int FCS_SIZE = 4;
+    private static final int PCAPREC_HDR_SIZE = 16;
 
     Button mStart;
     CaptureThread mCapThread;
@@ -63,7 +72,6 @@ public class MainActivity extends AppCompatActivity implements Observer {
         else
             queryCaptureStatus();
 
-        // will call the "update" method when the capture status changes
         MyBroadcastReceiver.CaptureObservable.getInstance().addObserver(this);
     }
 
@@ -87,17 +95,6 @@ public class MainActivity extends AppCompatActivity implements Observer {
         super.onSaveInstanceState(bundle);
     }
 
-    /**
-     * Called when a packet is received from PCAPdroid.
-     *
-     * @param pkt The Ethernet packet received (if pcapdroid_trailer is set, the packet is wrapped in an Ethernet frame).
-     *            If pcapdroid_trailer is not set, the packet is an IpV4Packet, so the code can be simplified to:
-     *
-     *                void onPacketReceived(IpV4Packet pkt) {
-     *                  IpV4Packet.IpV4Header hdr = pkt.getHeader();
-     *                  // logging etc.
-     *                }
-     */
     void onPacketReceived(EthernetPacket pkt) {
         int ethPayloadLength = pkt.length();
         if (ethPayloadLength < PCAPDROID_TRAILER_SIZE) {
@@ -159,7 +156,6 @@ public class MainActivity extends AppCompatActivity implements Observer {
         intent.putExtra("collector_ip_address", "127.0.0.1");
         intent.putExtra("collector_port", "5123");
         intent.putExtra("pcapdroid_trailer", "true");
-        //intent.putExtra("app_filter", "org.mozilla.firefox");
 
         captureStartLauncher.launch(intent);
     }
@@ -211,12 +207,103 @@ public class MainActivity extends AppCompatActivity implements Observer {
         if(result.getResultCode() == RESULT_OK) {
             Toast.makeText(this, "Capture stopped!", Toast.LENGTH_SHORT).show();
             setCaptureRunning(false);
+            saveCapturedPackets();
         } else
             Toast.makeText(this, "Could not stop capture", Toast.LENGTH_SHORT).show();
 
         Intent intent = result.getData();
         if((intent != null) && (intent.hasExtra("bytes_sent")))
             logStats(intent);
+    }
+
+    private void saveCapturedPackets() {
+        if (mCapThread == null) {
+            Log.w(TAG, "No capture thread found");
+            return;
+        }
+
+        List<CaptureThread.CapturedPacket> packets = mCapThread.getCapturedPackets();
+        if (packets == null || packets.isEmpty()) {
+            Log.w(TAG, "No packets captured");
+            Toast.makeText(this, "No packets captured on ports 22101/22102", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        new Thread(() -> {
+            try {
+                String timestamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
+                String filename = "capture_" + timestamp + ".pcap";
+
+                File downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                if (!downloadDir.exists()) {
+                    downloadDir.mkdirs();
+                }
+
+                File outputFile = new File(downloadDir, filename);
+
+                FileOutputStream fos = new FileOutputStream(outputFile);
+
+                writePcapHeader(fos, packets.size());
+
+                for (CaptureThread.CapturedPacket packet : packets) {
+                    writePcapRecord(fos, packet);
+                }
+
+                fos.close();
+
+                final String savedPath = outputFile.getAbsolutePath();
+                final int packetCount = packets.size();
+
+                runOnUiThread(() -> {
+                    Toast.makeText(this,
+                        "Saved " + packetCount + " packets to Downloads/" + filename,
+                        Toast.LENGTH_LONG).show();
+                    Log.i(TAG, "Packets saved to: " + savedPath);
+                });
+
+            } catch (IOException e) {
+                Log.e(TAG, "Failed to save packets", e);
+                runOnUiThread(() -> {
+                    Toast.makeText(this,
+                        "Failed to save packets: " + e.getMessage(),
+                        Toast.LENGTH_LONG).show();
+                });
+            }
+        }).start();
+    }
+
+    private void writePcapHeader(FileOutputStream fos, int packetCount) throws IOException {
+        ByteBuffer header = ByteBuffer.allocate(24);
+
+        header.putInt(0x1A2B3C4D);
+        header.putShort((short) 0x0002);
+        header.putShort((short) 0x0004);
+        header.putInt(0);
+        header.putInt(0);
+        header.putInt(65535);
+        header.putInt(1);
+
+        fos.write(header.array());
+    }
+
+    private void writePcapRecord(FileOutputStream fos, CaptureThread.CapturedPacket packet) throws IOException {
+        if (packet.length < PCAPREC_HDR_SIZE) {
+            Log.w(TAG, "Invalid packet length: " + packet.length);
+            return;
+        }
+
+        byte[] pcapData = Arrays.copyOfRange(packet.data, PCAPREC_HDR_SIZE, packet.length);
+        int captureLen = pcapData.length;
+        int origLen = packet.length - PCAPREC_HDR_SIZE;
+
+        ByteBuffer recordHeader = ByteBuffer.allocate(16);
+        recordHeader.putInt((int) (packet.timestamp >> 32));
+        recordHeader.putInt((int) (packet.timestamp & 0xFFFFFFFF));
+        recordHeader.putInt(captureLen);
+        recordHeader.putInt(origLen);
+
+        fos.write(recordHeader.array());
+        fos.write(pcapData);
     }
 
     void handleCaptureStatusResult(final ActivityResult result) {
