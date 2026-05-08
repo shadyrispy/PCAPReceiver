@@ -11,6 +11,8 @@ jobs:
   build:
     name: Build with Rust JNI
     runs-on: ubuntu-latest
+    environment:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     
     steps:
     - name: Checkout code
@@ -23,17 +25,22 @@ jobs:
         distribution: 'temurin'
         
     - name: Setup Android SDK
-      uses: android-actions/setup-android@v3
-      with:
-        api-level: 35
-        build-tools: 35.0.0
-        
-    - name: Setup Android NDK
       run: |
-        echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;26d" 2>/dev/null || true
-        if [ -d "$ANDROID_HOME/ndk" ]; then
-          echo "NDK_VERSION=$(ls $ANDROID_HOME/ndk | head -1)" >> $GITHUB_ENV
-        fi
+        mkdir -p $HOME/android-sdk/cmdline-tools
+        cd $HOME/android-sdk/cmdline-tools
+        curl -sL https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -o cmdline-tools.zip
+        unzip -q cmdline-tools.zip
+        mv cmdline-tools latest
+        rm cmdline-tools.zip
+        
+        export ANDROID_HOME=$HOME/android-sdk
+        export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools
+        
+        yes | sdkmanager --licenses 2>/dev/null || true
+        sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;26d"
+        
+        echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
+        echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26d" >> $GITHUB_ENV
         
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
@@ -61,24 +68,16 @@ jobs:
     - name: Build Rust JNI Libraries
       run: |
         cd jni
-        # Get NDK version
-        NDK_VERSION=$(ls $ANDROID_HOME/ndk 2>/dev/null | head -1 || echo "26d")
-        echo "Building with NDK: $NDK_VERSION"
+        export ANDROID_NDK_HOME=${{ env.ANDROID_NDK_HOME }}
+        export PATH=$PATH:$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin
         
-        # Set NDK home
-        export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION
-        export PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
-        
-        # Build for all targets
         cargo build --release --lib
         
-        # Create jniLibs directories
         mkdir -p ../app/src/main/jniLibs/arm64-v8a
         mkdir -p ../app/src/main/jniLibs/armeabi-v7a
         mkdir -p ../app/src/main/jniLibs/x86_64
         mkdir -p ../app/src/main/jniLibs/x86
         
-        # Copy libraries
         cp target/release/libartifactarium.so ../app/src/main/jniLibs/arm64-v8a/
         cp target/release/libartifactarium.so ../app/src/main/jniLibs/armeabi-v7a/
         cp target/release/libartifactarium.so ../app/src/main/jniLibs/x86_64/
