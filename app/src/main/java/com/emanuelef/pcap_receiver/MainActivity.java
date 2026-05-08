@@ -16,6 +16,8 @@ import android.widget.Toast;
 
 import org.pcap4j.packet.EthernetPacket;
 import org.pcap4j.packet.IpV4Packet;
+import org.pcap4j.packet.UdpPacket;
+import org.pcap4j.packet.TcpPacket;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -124,10 +126,27 @@ public class MainActivity extends AppCompatActivity implements Observer {
         if (pkt.getPayload() instanceof IpV4Packet) {
             IpV4Packet ipV4Packet = (IpV4Packet) pkt.getPayload();
             IpV4Packet.IpV4Header hdr = ipV4Packet.getHeader();
-            mLog.append(String.format("[%s] %s -> %s [%d B] (App: %s, UID: %d)\n",
-                    hdr.getProtocol(),
-                    hdr.getSrcAddr().getHostAddress(), hdr.getDstAddr().getHostAddress(),
-                    ipV4Packet.length(), appName, uid));
+
+            int srcPort = 0;
+            int dstPort = 0;
+
+            if (ipV4Packet.getPayload() instanceof UdpPacket) {
+                UdpPacket udpPacket = (UdpPacket) ipV4Packet.getPayload();
+                srcPort = udpPacket.getHeader().getSrcPort().valueAsInt();
+                dstPort = udpPacket.getHeader().getDstPort().valueAsInt();
+            } else if (ipV4Packet.getPayload() instanceof TcpPacket) {
+                TcpPacket tcpPacket = (TcpPacket) ipV4Packet.getPayload();
+                srcPort = tcpPacket.getHeader().getSrcPort().valueAsInt();
+                dstPort = tcpPacket.getHeader().getDstPort().valueAsInt();
+            }
+
+            if (srcPort == 22101 || srcPort == 22102 || dstPort == 22101 || dstPort == 22102) {
+                mLog.append(String.format("[%s] %s:%d -> %s:%d [%d B] (App: %s, UID: %d)\n",
+                        hdr.getProtocol(),
+                        hdr.getSrcAddr().getHostAddress(), srcPort,
+                        hdr.getDstAddr().getHostAddress(), dstPort,
+                        ipV4Packet.length(), appName, uid));
+            }
         } else {
             Log.w(TAG, "Received non-IPv4 packet");
         }
@@ -159,7 +178,7 @@ public class MainActivity extends AppCompatActivity implements Observer {
         intent.putExtra("collector_ip_address", "127.0.0.1");
         intent.putExtra("collector_port", "5123");
         intent.putExtra("pcapdroid_trailer", "true");
-        //intent.putExtra("app_filter", "org.mozilla.firefox");
+        intent.putExtra("app_filter", "com.miHoYo.Yuanshen");
 
         captureStartLauncher.launch(intent);
     }
