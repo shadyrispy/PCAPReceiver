@@ -17,7 +17,6 @@ import android.widget.Toast;
 import org.pcap4j.packet.EthernetPacket;
 import org.pcap4j.packet.IpV4Packet;
 import org.pcap4j.packet.UdpPacket;
-import org.pcap4j.packet.TcpPacket;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -50,6 +49,8 @@ public class MainActivity extends AppCompatActivity implements Observer {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+
+        System.loadLibrary("artifactarium");
 
         mLog = findViewById(R.id.pkts_log);
         mStart = findViewById(R.id.start_btn);
@@ -127,30 +128,35 @@ public class MainActivity extends AppCompatActivity implements Observer {
             IpV4Packet ipV4Packet = (IpV4Packet) pkt.getPayload();
             IpV4Packet.IpV4Header hdr = ipV4Packet.getHeader();
 
-            int srcPort = 0;
-            int dstPort = 0;
-
-            if (ipV4Packet.getPayload() instanceof UdpPacket) {
-                UdpPacket udpPacket = (UdpPacket) ipV4Packet.getPayload();
-                srcPort = udpPacket.getHeader().getSrcPort().valueAsInt();
-                dstPort = udpPacket.getHeader().getDstPort().valueAsInt();
-            } else if (ipV4Packet.getPayload() instanceof TcpPacket) {
-                TcpPacket tcpPacket = (TcpPacket) ipV4Packet.getPayload();
-                srcPort = tcpPacket.getHeader().getSrcPort().valueAsInt();
-                dstPort = tcpPacket.getHeader().getDstPort().valueAsInt();
+            if (!(ipV4Packet.getPayload() instanceof UdpPacket)) {
+                Log.w(TAG, "Received non-UDP packet");
+                return;
             }
 
-            if (srcPort == 22101 || srcPort == 22102 || dstPort == 22101 || dstPort == 22102) {
-                mLog.append(String.format("[%s] %s:%d -> %s:%d [%d B] (App: %s, UID: %d)\n",
-                        hdr.getProtocol(),
-                        hdr.getSrcAddr().getHostAddress(), srcPort,
-                        hdr.getDstAddr().getHostAddress(), dstPort,
-                        ipV4Packet.length(), appName, uid));
+            UdpPacket udpPacket = (UdpPacket) ipV4Packet.getPayload();
+            int srcPort = udpPacket.getHeader().getSrcPort().valueAsInt();
+            int dstPort = udpPacket.getHeader().getDstPort().valueAsInt();
+
+            if (srcPort != 22101 && srcPort != 22102 && dstPort != 22101 && dstPort != 22102) {
+                return;
             }
+
+            byte[] udpPayload = udpPacket.getPayload().getRawData();
+            Log.d(TAG, "JNI: Calling processPacket with " + udpPayload.length + " bytes, srcPort=" + srcPort + ", dstPort=" + dstPort);
+            String result = nativeProcessPacket(udpPayload);
+            Log.d(TAG, "JNI: processPacket returned: " + result);
+
+            mLog.append(String.format("[%s] %s:%d -> %s:%d [%d B] (App: %s, UID: %d) -> %s\n",
+                    hdr.getProtocol(),
+                    hdr.getSrcAddr().getHostAddress(), srcPort,
+                    hdr.getDstAddr().getHostAddress(), dstPort,
+                    ipV4Packet.length(), appName, uid, result));
         } else {
             Log.w(TAG, "Received non-IPv4 packet");
         }
     }
+
+    private native String nativeProcessPacket(byte[] packetData);
 
     void queryCaptureStatus() {
         Log.d(TAG, "Querying PCAPdroid");
