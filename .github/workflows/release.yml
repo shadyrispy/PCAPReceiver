@@ -1,15 +1,36 @@
-name: Build Android APK
+name: Create Release
 
 on:
   push:
-    branches: [ main, master, release/** ]
-  pull_request:
-    branches: [ main, master ]
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 jobs:
-  build:
-    name: Build with Rust JNI
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+      
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref_name }}
+        release_name: ${{ github.ref_name }}
+        draft: false
+        prerelease: false
+
+  build-release:
+    needs: create-release
+    name: Build and Upload Release APK
     runs-on: ubuntu-latest
     
     steps:
@@ -31,9 +52,6 @@ jobs:
     - name: Setup Android NDK
       run: |
         echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;26d" 2>/dev/null || true
-        if [ -d "$ANDROID_HOME/ndk" ]; then
-          echo "NDK_VERSION=$(ls $ANDROID_HOME/ndk | head -1)" >> $GITHUB_ENV
-        fi
         
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
@@ -61,35 +79,30 @@ jobs:
     - name: Build Rust JNI Libraries
       run: |
         cd jni
-        # Get NDK version
         NDK_VERSION=$(ls $ANDROID_HOME/ndk 2>/dev/null | head -1 || echo "26d")
         echo "Building with NDK: $NDK_VERSION"
-        
-        # Set NDK home
         export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION
-        export PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
-        
-        # Build for all targets
         cargo build --release --lib
         
-        # Create jniLibs directories
         mkdir -p ../app/src/main/jniLibs/arm64-v8a
         mkdir -p ../app/src/main/jniLibs/armeabi-v7a
         mkdir -p ../app/src/main/jniLibs/x86_64
         mkdir -p ../app/src/main/jniLibs/x86
         
-        # Copy libraries
         cp target/release/libartifactarium.so ../app/src/main/jniLibs/arm64-v8a/
         cp target/release/libartifactarium.so ../app/src/main/jniLibs/armeabi-v7a/
         cp target/release/libartifactarium.so ../app/src/main/jniLibs/x86_64/
         cp target/release/libartifactarium.so ../app/src/main/jniLibs/x86/
         
-    - name: Build Debug APK
-      run: ./gradlew assembleDebug
+    - name: Build Release APK
+      run: ./gradlew assembleRelease
       
-    - name: Upload Debug APK
-      uses: actions/upload-artifact@v4
+    - name: Upload Release APK
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        name: PCAPReceiver-Debug-APK
-        path: app/build/outputs/apk/debug/app-debug.apk
-        retention-days: 30
+        upload_url: ${{ needs.create-release.outputs.upload_url }}
+        asset_path: app/build/outputs/apk/release/app-release.apk
+        asset_name: PCAPReceiver-${{ github.ref_name }}.apk
+        asset_content_type: application/vnd.android.package-archive

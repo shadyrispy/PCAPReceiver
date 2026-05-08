@@ -1,5 +1,5 @@
 use jni::JNIEnv;
-use jni::objects::{JClass, JString};
+use jni::objects::{JClass, JByteArray};
 use jni::sys::jstring;
 use auto_artifactarium::{GameSniffer, GamePacket};
 use std::sync::Mutex;
@@ -12,11 +12,23 @@ static GAME_SNIFFER: Lazy<Mutex<GameSniffer>> = Lazy::new(|| {
     Mutex::new(GameSniffer::new())
 });
 
+fn connection_desc(conn: &auto_artifactarium::ConnectionPacket) -> String {
+    use auto_artifactarium::ConnectionPacket;
+    match conn {
+        ConnectionPacket::HandshakeRequested => "HandshakeRequested".to_string(),
+        ConnectionPacket::Disconnected => "Disconnected".to_string(),
+        ConnectionPacket::HandshakeEstablished => "HandshakeEstablished".to_string(),
+        ConnectionPacket::SegmentData(dir, data) => {
+            format!("SegmentData({:?}, {} bytes)", dir, data.len())
+        }
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn Java_com_emanuelef_1pcap_1receiver_MainActivity_nativeProcessPacket(
     env: JNIEnv,
     _class: JClass,
-    packet_data: jni::objects::JbyteArray,
+    packet_data: JByteArray,
 ) -> jstring {
     let _span = tracing::info_span!("nativeProcessPacket").entered();
 
@@ -24,7 +36,8 @@ pub extern "C" fn Java_com_emanuelef_1pcap_1receiver_MainActivity_nativeProcessP
         Ok(v) => v,
         Err(e) => {
             tracing::error!(?e, "Failed to convert byte array");
-            return env.new_string("Error: Failed to convert byte array").unwrap_or_else(|_| std::ptr::null_mut());
+            let jstr = env.new_string("Error: Failed to convert byte array").expect("Failed to create JString");
+            return jstr.into_raw();
         }
     };
 
@@ -34,7 +47,8 @@ pub extern "C" fn Java_com_emanuelef_1pcap_1receiver_MainActivity_nativeProcessP
         Ok(s) => s,
         Err(e) => {
             tracing::error!(?e, "Failed to lock sniffer");
-            return env.new_string("Error: Failed to lock sniffer").unwrap_or_else(|_| std::ptr::null_mut());
+            let jstr = env.new_string("Error: Failed to lock sniffer").expect("Failed to create JString");
+            return jstr.into_raw();
         }
     };
 
@@ -42,13 +56,14 @@ pub extern "C" fn Java_com_emanuelef_1pcap_1receiver_MainActivity_nativeProcessP
 
     let result_str = match result {
         Some(GamePacket::Connection(conn)) => {
-            tracing::info!(?conn, "Connection packet");
-            format!("Connection: {:?}", conn)
+            let desc = connection_desc(&conn);
+            tracing::info!("Connection packet: {}", desc);
+            format!("Connection: {}", desc)
         }
         Some(GamePacket::Commands(commands)) => {
             let mut result_parts = Vec::new();
             for cmd in &commands {
-                tracing::info!(?cmd, "Game command");
+                tracing::info!("Game command: id={}, data_len={}", cmd.command_id, cmd.data_len);
                 result_parts.push(format!("Command(id={}, data_len={})", cmd.command_id, cmd.data_len));
             }
             if result_parts.is_empty() {
@@ -65,7 +80,6 @@ pub extern "C" fn Java_com_emanuelef_1pcap_1receiver_MainActivity_nativeProcessP
 
     tracing::info!(result = %result_str, "JNI result");
 
-    env.new_string(&result_str)
-        .map(|s| s.into_raw())
-        .unwrap_or_else(|_| std::ptr::null_mut())
+    let jstr = env.new_string(&result_str).expect("Failed to create JString");
+    jstr.into_raw()
 }
