@@ -10,7 +10,8 @@ jobs:
   build-release:
     name: Build Release APK
     runs-on: ubuntu-latest
-    environment:
+    
+    env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     
     steps:
