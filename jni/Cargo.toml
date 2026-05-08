@@ -12,6 +12,3 @@ auto-artifactarium = { git = "https://github.com/konkers/auto-artifactarium" }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
 once_cell = "1.19"
-
-[target.x86_64-linux-android]
-rustflags = ["-C", "link-arg=-lsystem"]

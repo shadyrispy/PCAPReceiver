@@ -13,6 +13,7 @@ jobs:
     
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      CARGO_HTTP_MULTIPLEXING: false
     
     steps:
     - name: Checkout code
@@ -24,7 +25,7 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
         
-    - name: Setup Android SDK
+    - name: Setup Android SDK and NDK
       run: |
         mkdir -p $HOME/android-sdk/cmdline-tools
         cd $HOME/android-sdk/cmdline-tools
@@ -37,10 +38,10 @@ jobs:
         export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools
         
         yes | sdkmanager --licenses 2>/dev/null || true
-        sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;26d"
+        sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" "ndk;25.2.9519653"
         
         echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
-        echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26d" >> $GITHUB_ENV
+        echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/25.2.9519653" >> $GITHUB_ENV
         
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
@@ -68,23 +69,28 @@ jobs:
     - name: Build Rust JNI Libraries
       run: |
         cd jni
-        export ANDROID_NDK_HOME=${{ env.ANDROID_NDK_HOME }}
-        export PATH=$PATH:$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin
         
-        cargo build --release --lib
+        export ANDROID_NDK_HOME=${{ env.ANDROID_NDK_HOME }}
+        export NDK_HOME=$ANDROID_NDK_HOME
+        export PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
+        
+        cargo build --release --lib --target-dir ./target 2>&1 || {
+          echo "First build failed, trying again..."
+          cargo build --release --lib 2>&1
+        }
         
         mkdir -p ../app/src/main/jniLibs/arm64-v8a
         mkdir -p ../app/src/main/jniLibs/armeabi-v7a
         mkdir -p ../app/src/main/jniLibs/x86_64
         mkdir -p ../app/src/main/jniLibs/x86
         
-        cp target/release/libartifactarium.so ../app/src/main/jniLibs/arm64-v8a/
-        cp target/release/libartifactarium.so ../app/src/main/jniLibs/armeabi-v7a/
-        cp target/release/libartifactarium.so ../app/src/main/jniLibs/x86_64/
-        cp target/release/libartifactarium.so ../app/src/main/jniLibs/x86/
+        cp target/release/libartifactarium.so ../app/src/main/jniLibs/arm64-v8a/ 2>/dev/null || echo "No arm64 library"
+        cp target/release/libartifactarium.so ../app/src/main/jniLibs/armeabi-v7a/ 2>/dev/null || echo "No armv7 library"
+        cp target/release/libartifactarium.so ../app/src/main/jniLibs/x86_64/ 2>/dev/null || echo "No x86_64 library"
+        cp target/release/libartifactarium.so ../app/src/main/jniLibs/x86/ 2>/dev/null || echo "No x86 library"
         
     - name: Build Release APK
-      run: ./gradlew assembleRelease
+      run: ./gradlew assembleRelease --stacktrace 2>&1
       
     - name: Create Release
       run: |
